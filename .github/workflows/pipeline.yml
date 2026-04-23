@@ -1,0 +1,118 @@
+name: CI — Build_Test (DevOps Security Pipeline)
+
+# ─────────────────────────────────────────────
+# TRIGGER: Runs on every Pull Request
+# This is the CI (Continuous Integration) phase.
+# Goal: catch bugs, misconfigurations, and security issues BEFORE merging.
+# ─────────────────────────────────────────────
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+
+  # ── JOB 1: Lint & Validate Configuration Files ──────────────────────────────
+  lint_and_validate:
+    name: 🔍 Lint & Validate Configs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install Linting Tools
+        run: |
+          pip install yamllint==1.35.1 --quiet
+          echo "✅ yamllint installed"
+
+      - name: 🔎 Lint YAML Files (CI/CD configs, K8s manifests, etc.)
+        run: |
+          echo "── Scanning all YAML files for syntax errors ──"
+          yamllint -d relaxed .github/workflows/ || true
+          echo "✅ YAML lint complete"
+
+      - name: 🔎 Validate Shell Scripts (ShellCheck)
+        run: |
+          sudo apt-get install -y shellcheck --quiet
+          echo "── Running ShellCheck on all .sh scripts ──"
+          find ./scripts -name "*.sh" -exec shellcheck {} \; || true
+          echo "✅ ShellCheck complete"
+
+      - name: 📋 Print Environment Info
+        run: |
+          echo "=== Runner Environment ==="
+          echo "OS: $(uname -a)"
+          echo "Git version: $(git --version)"
+          echo "Python: $(python --version)"
+          echo "Branch: ${{ github.head_ref }}"
+          echo "PR Author: ${{ github.actor }}"
+
+  # ── JOB 2: Security Scanning ────────────────────────────────────────────────
+  security_scan:
+    name: 🛡️ Security Scan
+    runs-on: ubuntu-latest
+    needs: lint_and_validate   # Only runs if Job 1 passes
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Secret Detection — Scan for Hardcoded Credentials
+        run: |
+          echo "── Scanning for accidentally committed secrets ──"
+          # Simulate Gitleaks / truffleHog style secret scanning
+          FOUND=0
+
+          # Check for common secret patterns
+          patterns=(
+            "password\s*=\s*['\"][^'\"]{4,}"
+            "secret\s*=\s*['\"][^'\"]{4,}"
+            "api_key\s*=\s*['\"][^'\"]{4,}"
+            "AWS_SECRET"
+            "PRIVATE_KEY"
+          )
+
+          for pattern in "${patterns[@]}"; do
+            if grep -rEi "$pattern" ./src ./scripts 2>/dev/null | grep -v ".example" | grep -q .; then
+              echo "⚠️  WARNING: Possible secret found matching pattern: $pattern"
+              FOUND=1
+            fi
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "✅ No hardcoded secrets detected"
+          else
+            echo "❌ Potential secrets found — review before merging!"
+            exit 1
+          fi
+
+      - name: 🐋 Dockerfile Security Lint (Hadolint simulation)
+        run: |
+          echo "── Checking Dockerfile best practices ──"
+          if [ -f "Dockerfile" ]; then
+            # Check for common Dockerfile security issues
+            if grep -q "FROM.*:latest" Dockerfile; then
+              echo "⚠️  WARNING: Using :latest tag is not recommended. Pin a specific version."
+            fi
+            if ! grep -q "USER" Dockerfile; then
+              echo "⚠️  WARNING: No USER directive found. Container may run as root."
+            fi
+            echo "✅ Dockerfile lint complete"
+          else
+            echo "ℹ️  No Dockerfile found — skipping"
+          fi
+
+      - name: 🔒 Dependency Vulnerability Check
+        run: |
+          pip install safety==3.2.3 --quiet 2>/dev/null || true
+          echo "── Checking Python dependencies for known CVEs ──"
+          if [ -f "requirements.txt" ]; then
+            safety check -r requirements.txt --output text || true
+          else
