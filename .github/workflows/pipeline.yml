@@ -1,9 +1,7 @@
 name: CI — Build_Test (DevOps Security Pipeline)
 
 # ─────────────────────────────────────────────
-# TRIGGER: Runs on every Pull Request
-# This is the CI (Continuous Integration) phase.
-# Goal: catch bugs, misconfigurations, and security issues BEFORE merging.
+# TRIGGER: Runs on Pull Request + Push
 # ─────────────────────────────────────────────
 on:
   pull_request:
@@ -13,7 +11,7 @@ on:
 
 jobs:
 
-  # ── JOB 1: Lint & Validate Configuration Files ──────────────────────────────
+  # ── JOB 1: Lint & Validate ──────────────────────────────
   lint_and_validate:
     name: 🔍 Lint & Validate Configs
     runs-on: ubuntu-latest
@@ -32,45 +30,42 @@ jobs:
           pip install yamllint==1.35.1 --quiet
           echo "✅ yamllint installed"
 
-      - name: 🔎 Lint YAML Files (CI/CD configs, K8s manifests, etc.)
+      - name: 🔎 Lint YAML Files
         run: |
-          echo "── Scanning all YAML files for syntax errors ──"
+          echo "── Scanning YAML files ──"
           yamllint -d relaxed .github/workflows/ || true
           echo "✅ YAML lint complete"
 
-      - name: 🔎 Validate Shell Scripts (ShellCheck)
+      - name: 🔎 Validate Shell Scripts
         run: |
           sudo apt-get install -y shellcheck --quiet
-          echo "── Running ShellCheck on all .sh scripts ──"
+          echo "── Running ShellCheck ──"
           find ./scripts -name "*.sh" -exec shellcheck {} \; || true
           echo "✅ ShellCheck complete"
 
       - name: 📋 Print Environment Info
         run: |
-          echo "=== Runner Environment ==="
           echo "OS: $(uname -a)"
-          echo "Git version: $(git --version)"
+          echo "Git: $(git --version)"
           echo "Python: $(python --version)"
           echo "Branch: ${{ github.head_ref }}"
-          echo "PR Author: ${{ github.actor }}"
+          echo "Actor: ${{ github.actor }}"
 
-  # ── JOB 2: Security Scanning ────────────────────────────────────────────────
+  # ── JOB 2: Security Scan ──────────────────────────────
   security_scan:
     name: 🛡️ Security Scan
     runs-on: ubuntu-latest
-    needs: lint_and_validate   # Only runs if Job 1 passes
+    needs: lint_and_validate
 
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🔐 Secret Detection — Scan for Hardcoded Credentials
+      - name: 🔐 Secret Detection
         run: |
-          echo "── Scanning for accidentally committed secrets ──"
-          # Simulate Gitleaks / truffleHog style secret scanning
+          echo "── Scanning for secrets ──"
           FOUND=0
 
-          # Check for common secret patterns
           patterns=(
             "password\s*=\s*['\"][^'\"]{4,}"
             "secret\s*=\s*['\"][^'\"]{4,}"
@@ -81,40 +76,36 @@ jobs:
 
           for pattern in "${patterns[@]}"; do
             if grep -rEi "$pattern" ./src ./scripts 2>/dev/null | grep -v ".example" | grep -q .; then
-              echo "⚠️  WARNING: Possible secret found matching pattern: $pattern"
+              echo "⚠️ Possible secret found: $pattern"
               FOUND=1
             fi
           done
 
           if [ "$FOUND" -eq 0 ]; then
-            echo "✅ No hardcoded secrets detected"
+            echo "✅ No secrets detected"
           else
-            echo "❌ Potential secrets found — review before merging!"
+            echo "❌ Secrets found!"
             exit 1
           fi
 
-      - name: 🐋 Dockerfile Security Lint (Hadolint simulation)
+      - name: 🐋 Dockerfile Check
         run: |
-          echo "── Checking Dockerfile best practices ──"
+          echo "── Checking Dockerfile ──"
           if [ -f "Dockerfile" ]; then
-            # Check for common Dockerfile security issues
-            if grep -q "FROM.*:latest" Dockerfile; then
-              echo "⚠️  WARNING: Using :latest tag is not recommended. Pin a specific version."
-            fi
-            if ! grep -q "USER" Dockerfile; then
-              echo "⚠️  WARNING: No USER directive found. Container may run as root."
-            fi
-            echo "✅ Dockerfile lint complete"
+            grep -q "FROM.*:latest" Dockerfile && echo "⚠️ avoid :latest"
+            grep -q "USER" Dockerfile || echo "⚠️ missing USER directive"
+            echo "✅ Dockerfile check complete"
           else
-            echo "ℹ️  No Dockerfile found — skipping"
+            echo "ℹ️ No Dockerfile found"
           fi
 
-      - name: 🔒 Dependency Vulnerability Check
+      - name: 🔒 Dependency Scan
         run: |
-          pip install safety==3.2.3 --quiet 2>/dev/null || true
-          echo "── Checking Python dependencies for known CVEs ──"
+          pip install safety==3.2.3 --quiet || true
+          echo "── Checking dependencies ──"
+
           if [ -f "requirements.txt" ]; then
             safety check -r requirements.txt --output text || true
           else
-	    echo "ℹ️ No requirements.txt found — skipping"
+            echo "ℹ️ No requirements.txt found — skipping"
           fi
