@@ -116,3 +116,5 @@ jobs:
           if [ -f "requirements.txt" ]; then
             safety check -r requirements.txt --output text || true
           else
+	    echo "ℹ️ No requirements.txt found — skipping"
+          fi
